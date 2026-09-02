@@ -1,0 +1,30 @@
+# ModelSim / Questa
+work/
+transcript
+vsim.wlf
+*.wlf
+modelsim.ini
+*.vstf
+
+# Quartus
+db/
+incremental_db/
+output_files/
+simulation/
+greybox_tmp/
+*.qws
+*.rpt
+*.sof
+*.pof
+*.jdi
+*.done
+*.smsg
+
+# Generated program images
+*.hex
+*.mif
+
+# Editor / OS
+.claude/
+.DS_Store
+CLAUDE.md

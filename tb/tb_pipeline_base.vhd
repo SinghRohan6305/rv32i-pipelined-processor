@@ -1,0 +1,16 @@
+-- =============================================================================
+-- tb_pipeline_base.vhd  —  Shared process/signal declarations for pipeline TBs
+-- This file is NOT a standalone TB. Individual TBs use this pattern.
+-- =============================================================================
+-- All pipeline testbenches follow this pattern:
+--
+--   1. Build an array of instructions (program)
+--   2. Write them to a .hex init file (or use generic overrides)
+--   3. Instantiate pipeline_top
+--   4. Drive clock/reset
+--   5. After N cycles, inspect dbg_reg_we/wa/wd to verify register values
+--
+-- Because VHDL generics cannot pass runtime arrays to memory, each TB writes
+-- its program to a temp hex file and passes it via IMEM_INIT generic.
+-- =============================================================================
+-- (Informational header only — no compilable entity here)

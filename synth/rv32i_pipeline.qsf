@@ -1,0 +1,41 @@
+# =============================================================================
+# rv32i_pipeline.qsf  —  Quartus Settings File for Cyclone V FPGA
+# Target: 5CSEMA5F31C6 (common Cyclone V eval board)
+# Goal: 100 MHz (10 ns period)
+# =============================================================================
+
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEMA5F31C6
+set_global_assignment -name TOP_LEVEL_ENTITY pipeline_top
+set_global_assignment -name PROJECT_REVISION rv32i_pipeline
+
+# ---- Source files ----
+set_global_assignment -name VHDL_FILE ../src/pkg_riscv.vhd     -library work
+set_global_assignment -name VHDL_FILE ../src/alu.vhd            -library work
+set_global_assignment -name VHDL_FILE ../src/regfile.vhd        -library work
+set_global_assignment -name VHDL_FILE ../src/branch_predictor.vhd -library work
+set_global_assignment -name VHDL_FILE ../src/hazard_unit.vhd    -library work
+set_global_assignment -name VHDL_FILE ../src/imem.vhd           -library work
+set_global_assignment -name VHDL_FILE ../src/dmem.vhd           -library work
+set_global_assignment -name VHDL_FILE ../src/control_unit.vhd   -library work
+set_global_assignment -name VHDL_FILE ../src/pipeline_top.vhd   -library work
+
+# ---- VHDL standard ----
+set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
+set_global_assignment -name VHDL_SHOW_LMF_MAPPING_MESSAGES OFF
+
+# ---- Timing constraints ----
+set_global_assignment -name SDC_FILE rv32i_pipeline.sdc
+
+# ---- Optimization ----
+set_global_assignment -name OPTIMIZATION_MODE "HIGH PERFORMANCE EFFORT"
+set_global_assignment -name ALLOW_REGISTER_RETIMING ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT EXTRA
+set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
+
+# ---- Pin assignments (generic eval board) ----
+set_location_assignment PIN_AF14 -to clk
+set_location_assignment PIN_AA24 -to rst
+
+# Debug outputs (arbitrary LEDs on DE1-SoC / DE10-Standard)
+set_location_assignment PIN_AA21 -to dbg_reg_we
