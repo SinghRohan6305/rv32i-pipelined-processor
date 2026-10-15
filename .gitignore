@@ -28,3 +28,6 @@ greybox_tmp/
 .claude/
 .DS_Store
 CLAUDE.md
+
+# Python
+__pycache__/
