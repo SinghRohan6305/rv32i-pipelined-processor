@@ -4,8 +4,34 @@
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
+use std.textio.all;
 
 package tb_pkg is
+
+    -- Program image and shadow register file used by the pipeline TBs
+    type prog_t is array(natural range <>) of std_logic_vector(31 downto 0);
+    type reg_array_t is array(0 to 31) of std_logic_vector(31 downto 0);
+    type int_array_t is array(0 to 31) of integer;
+
+    -- Write a program to a hex file and return the path. Called while the TB
+    -- architecture is elaborated, so the file exists before IMEM (which reads
+    -- it during its own elaboration) is elaborated.
+    impure function write_hex(path : string; prog : prog_t) return string;
+
+    -- Compare one shadow register; on mismatch report and count an error.
+    procedure check_reg(regs     : reg_array_t;
+                        n        : natural;
+                        expected : std_logic_vector(31 downto 0);
+                        msg      : string;
+                        variable errors : inout natural);
+
+    -- Generic condition check with the same error counting.
+    procedure check_cond(cond : boolean;
+                         msg  : string;
+                         variable errors : inout natural);
+
+    -- Print the final verdict. Ends the simulation with a failure on errors.
+    procedure finish_test(name : string; errors : natural);
 
     -- Clock period for 100 MHz
     constant CLK_PERIOD : time := 10 ns;
@@ -62,6 +88,54 @@ package tb_pkg is
 end package tb_pkg;
 
 package body tb_pkg is
+
+    impure function write_hex(path : string; prog : prog_t) return string is
+        file fh    : text;
+        variable l : line;
+    begin
+        file_open(fh, path, WRITE_MODE);
+        for i in prog'range loop
+            hwrite(l, prog(i));
+            writeline(fh, l);
+        end loop;
+        file_close(fh);
+        return path;
+    end function;
+
+    procedure check_reg(regs     : reg_array_t;
+                        n        : natural;
+                        expected : std_logic_vector(31 downto 0);
+                        msg      : string;
+                        variable errors : inout natural) is
+    begin
+        if regs(n) /= expected then
+            report "FAIL: " & msg & "  x" & integer'image(n) &
+                   " = 0x" & to_hstring(regs(n)) &
+                   ", expected 0x" & to_hstring(expected)
+                severity error;
+            errors := errors + 1;
+        end if;
+    end procedure;
+
+    procedure check_cond(cond : boolean;
+                         msg  : string;
+                         variable errors : inout natural) is
+    begin
+        if not cond then
+            report "FAIL: " & msg severity error;
+            errors := errors + 1;
+        end if;
+    end procedure;
+
+    procedure finish_test(name : string; errors : natural) is
+    begin
+        if errors = 0 then
+            report "=== " & name & " PASS ===" severity note;
+        else
+            report "=== " & name & " FAILED with " & integer'image(errors) &
+                   " error(s) ===" severity failure;
+        end if;
+    end procedure;
 
     function r_instr(funct7 : std_logic_vector(6 downto 0);
                      rs2    : std_logic_vector(4 downto 0);

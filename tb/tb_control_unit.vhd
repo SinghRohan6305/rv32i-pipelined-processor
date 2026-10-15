@@ -8,6 +8,7 @@ use ieee.numeric_std.all;
 
 library work;
 use work.pkg_riscv.all;
+use work.tb_pkg.all;
 
 entity tb_control_unit is
 end entity tb_control_unit;
@@ -22,26 +23,6 @@ architecture sim of tb_control_unit is
     signal ctrl_wb  : ctrl_wb_t;
     signal is_auipc : std_logic;
 
-    procedure chk_ctrl(
-        instr_in     : std_logic_vector(31 downto 0);
-        exp_alu_src  : std_logic;
-        exp_reg_write: std_logic;
-        exp_mem_read : std_logic;
-        exp_mem_write: std_logic;
-        exp_branch   : std_logic;
-        exp_jump     : std_logic;
-        msg          : string) is
-    begin
-        instr <= instr_in;
-        wait for 5 ns;
-        assert ctrl_ex.alu_src     = exp_alu_src   report "FAIL " & msg & " alu_src"   severity error;
-        assert ctrl_wb.reg_write   = exp_reg_write  report "FAIL " & msg & " reg_write" severity error;
-        assert ctrl_mem.mem_read   = exp_mem_read   report "FAIL " & msg & " mem_read"  severity error;
-        assert ctrl_mem.mem_write  = exp_mem_write  report "FAIL " & msg & " mem_write" severity error;
-        assert ctrl_mem.branch     = exp_branch     report "FAIL " & msg & " branch"    severity error;
-        assert ctrl_mem.jump       = exp_jump       report "FAIL " & msg & " jump"      severity error;
-        report "PASS " & msg severity note;
-    end procedure;
 
 begin
     dut: entity work.control_unit
@@ -50,6 +31,27 @@ begin
                   is_auipc => is_auipc);
 
     process
+        variable errors : natural := 0;
+
+        procedure chk_ctrl(
+            instr_in     : std_logic_vector(31 downto 0);
+            exp_alu_src  : std_logic;
+            exp_reg_write: std_logic;
+            exp_mem_read : std_logic;
+            exp_mem_write: std_logic;
+            exp_branch   : std_logic;
+            exp_jump     : std_logic;
+            msg          : string) is
+        begin
+            instr <= instr_in;
+            wait for 5 ns;
+            check_cond(ctrl_ex.alu_src     = exp_alu_src, "" & msg & " alu_src", errors);
+            check_cond(ctrl_wb.reg_write   = exp_reg_write, "" & msg & " reg_write", errors);
+            check_cond(ctrl_mem.mem_read   = exp_mem_read, "" & msg & " mem_read", errors);
+            check_cond(ctrl_mem.mem_write  = exp_mem_write, "" & msg & " mem_write", errors);
+            check_cond(ctrl_mem.branch     = exp_branch, "" & msg & " branch", errors);
+            check_cond(ctrl_mem.jump       = exp_jump, "" & msg & " jump", errors);
+        end procedure;
     begin
         -- R-type: ADD x3, x1, x2
         --         alu_src=0, reg_write=1, mem_read=0, mem_write=0, branch=0, jump=0
@@ -62,38 +64,33 @@ begin
         chk_ctrl(x"ABCDE0B7", '1','1','0','0','0','0', "LUI");
         instr <= x"ABCDE0B7";
         wait for 5 ns;
-        assert imm = x"ABCDE000" report "FAIL LUI immediate" severity error;
-        report "PASS LUI immediate" severity note;
+        check_cond(imm = x"ABCDE000", "LUI immediate", errors);
 
         -- AUIPC x2, 0x10
         chk_ctrl(x"00010117", '1','1','0','0','0','0', "AUIPC");
         instr <= x"00010117";
         wait for 5 ns;
-        assert is_auipc = '1' report "FAIL AUIPC flag" severity error;
-        assert imm = x"00010000" report "FAIL AUIPC immediate" severity error;
-        report "PASS AUIPC" severity note;
+        check_cond(is_auipc = '1', "AUIPC flag", errors);
+        check_cond(imm = x"00010000", "AUIPC immediate", errors);
 
         -- LOAD: LW x2, 8(x1)
         chk_ctrl(x"00802103", '1','1','1','0','0','0', "LW");
         instr <= x"00802103";
         wait for 5 ns;
-        assert imm = x"00000008" report "FAIL LW immediate" severity error;
-        assert ctrl_wb.mem_to_reg = '1' report "FAIL LW mem_to_reg" severity error;
-        report "PASS LW ctrl" severity note;
+        check_cond(imm = x"00000008", "LW immediate", errors);
+        check_cond(ctrl_wb.mem_to_reg = '1', "LW mem_to_reg", errors);
 
         -- STORE: SW x2, 8(x1) -> imm=8
         chk_ctrl(x"00212423", '1','0','0','1','0','0', "SW");
         instr <= x"00212423";
         wait for 5 ns;
-        assert imm = x"00000008" report "FAIL SW immediate" severity error;
-        report "PASS SW ctrl" severity note;
+        check_cond(imm = x"00000008", "SW immediate", errors);
 
         -- BRANCH: BEQ x1, x2, +8
         chk_ctrl(x"00208463", '0','0','0','0','1','0', "BEQ");
         instr <= x"00208463";
         wait for 5 ns;
-        assert imm = x"00000008" report "FAIL BEQ immediate" severity error;
-        report "PASS BEQ ctrl" severity note;
+        check_cond(imm = x"00000008", "BEQ immediate", errors);
 
         -- JAL x1, +12
         chk_ctrl(x"00C000EF", '1','1','0','0','0','1', "JAL");
@@ -102,8 +99,7 @@ begin
         chk_ctrl(x"00408167", '1','1','0','0','0','1', "JALR");
         instr <= x"00408167";
         wait for 5 ns;
-        assert ctrl_ex.is_jalr = '1' report "FAIL JALR flag" severity error;
-        report "PASS JALR flag" severity note;
+        check_cond(ctrl_ex.is_jalr = '1', "JALR flag", errors);
 
         -- NOP (ADDI x0, x0, 0) -> reg_write='1' but rd=x0 (hardware guards)
         chk_ctrl(x"00000013", '1','1','0','0','0','0', "NOP");
@@ -114,7 +110,7 @@ begin
         -- ECALL
         chk_ctrl(x"00000073", '0','0','0','0','0','0', "ECALL");
 
-        report "=== tb_control_unit PASS ===" severity note;
+        finish_test("tb_control_unit", errors);
         wait;
     end process;
 end architecture sim;

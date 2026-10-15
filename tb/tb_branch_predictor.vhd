@@ -6,6 +6,9 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
+library work;
+use work.tb_pkg.all;
+
 entity tb_branch_predictor is
 end entity tb_branch_predictor;
 
@@ -29,6 +32,7 @@ begin
                   actual_taken => actual_taken);
 
     process
+        variable errors : natural := 0;
     begin
         -- After reset: all entries = 0 (predict not-taken)
         rst <= '1';
@@ -38,9 +42,7 @@ begin
 
         pc_fetch <= x"00000010";  -- index = bits[5:2] = 4
         wait for 1 ns;
-        assert predict_taken = '0'
-            report "FAIL: initial prediction should be not-taken" severity error;
-        report "PASS: initial not-taken" severity note;
+        check_cond(predict_taken = '0', "initial prediction should be not-taken", errors);
 
         -- Update: branch at PC=0x10 was actually taken
         wait until rising_edge(clk);
@@ -54,9 +56,7 @@ begin
         -- Now predict for same PC: should predict taken
         pc_fetch <= x"00000010";
         wait for 1 ns;
-        assert predict_taken = '1'
-            report "FAIL: after taken update, should predict taken" severity error;
-        report "PASS: predict taken after update" severity note;
+        check_cond(predict_taken = '1', "after taken update, should predict taken", errors);
 
         -- Update: was not-taken
         wait until rising_edge(clk);
@@ -69,16 +69,12 @@ begin
 
         pc_fetch <= x"00000010";
         wait for 1 ns;
-        assert predict_taken = '0'
-            report "FAIL: after not-taken update, should predict not-taken" severity error;
-        report "PASS: predict not-taken after update" severity note;
+        check_cond(predict_taken = '0', "after not-taken update, should predict not-taken", errors);
 
         -- Test different PC index (PC = 0x24, bits[5:2] = 9)
         pc_fetch <= x"00000024";
         wait for 1 ns;
-        assert predict_taken = '0'
-            report "FAIL: different entry should be not-taken" severity error;
-        report "PASS: independent entries" severity note;
+        check_cond(predict_taken = '0', "different entry should be not-taken", errors);
 
         -- Test reset clears predictor state
         wait until rising_edge(clk);
@@ -94,11 +90,9 @@ begin
 
         pc_fetch <= x"00000024";
         wait for 1 ns;
-        assert predict_taken = '0'
-            report "FAIL: reset should clear prediction" severity error;
-        report "PASS: reset clears predictor" severity note;
+        check_cond(predict_taken = '0', "reset should clear prediction", errors);
 
-        report "=== tb_branch_predictor PASS ===" severity note;
+        finish_test("tb_branch_predictor", errors);
         wait;
     end process;
 end architecture sim;

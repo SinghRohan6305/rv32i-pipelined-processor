@@ -8,6 +8,7 @@ use ieee.numeric_std.all;
 
 library work;
 use work.pkg_riscv.all;
+use work.tb_pkg.all;
 
 entity tb_dmem is
 end entity tb_dmem;
@@ -23,23 +24,6 @@ architecture sim of tb_dmem is
 
     constant CLK_P : time := 10 ns;
 
-    procedure write_mem(
-        signal clk   : in  std_logic;
-        signal we    : out std_logic;
-        signal size  : out std_logic_vector(2 downto 0);
-        signal addr  : out std_logic_vector(31 downto 0);
-        signal wdata : out std_logic_vector(31 downto 0);
-        sz           : std_logic_vector(2 downto 0);
-        a            : integer;
-        d            : std_logic_vector(31 downto 0)) is
-    begin
-        addr  <= std_logic_vector(to_unsigned(a, 32));
-        wdata <= d;
-        size  <= sz;
-        we    <= '1';
-        wait until rising_edge(clk);
-        we <= '0';
-    end procedure;
 
     procedure read_mem(
         signal clk  : in  std_logic;
@@ -66,46 +50,58 @@ begin
                   wdata => wdata, re => re, rdata => rdata);
 
     process
+        variable errors : natural := 0;
+
+        procedure write_mem(
+            signal clk   : in  std_logic;
+            signal we    : out std_logic;
+            signal size  : out std_logic_vector(2 downto 0);
+            signal addr  : out std_logic_vector(31 downto 0);
+            signal wdata : out std_logic_vector(31 downto 0);
+            sz           : std_logic_vector(2 downto 0);
+            a            : integer;
+            d            : std_logic_vector(31 downto 0)) is
+        begin
+            addr  <= std_logic_vector(to_unsigned(a, 32));
+            wdata <= d;
+            size  <= sz;
+            we    <= '1';
+            wait until rising_edge(clk);
+            we <= '0';
+        end procedure;
     begin
         -- ---- Word write/read ----
         write_mem(clk, we, size, addr, wdata, F3_SW, 0, x"DEADBEEF");
         read_mem (clk, re, size, addr,        F3_LW, 0);
-        assert rdata = x"DEADBEEF" report "FAIL LW" severity error;
-        report "PASS LW/SW" severity note;
+        check_cond(rdata = x"DEADBEEF", "LW", errors);
 
         -- ---- Halfword write, signed read ----
         write_mem(clk, we, size, addr, wdata, F3_SH, 4, x"FFFF8000");
         read_mem (clk, re, size, addr,        F3_LH, 4);
-        assert rdata = x"FFFF8000" report "FAIL LH sign ext" severity error;
-        report "PASS LH signed extend 0x8000->0xFFFF8000" severity note;
+        check_cond(rdata = x"FFFF8000", "LH sign ext", errors);
 
         -- ---- Halfword write, unsigned read ----
         read_mem (clk, re, size, addr, F3_LHU, 4);
-        assert rdata = x"00008000" report "FAIL LHU zero ext" severity error;
-        report "PASS LHU zero extend 0x8000->0x00008000" severity note;
+        check_cond(rdata = x"00008000", "LHU zero ext", errors);
 
         -- ---- Positive halfword ----
         write_mem(clk, we, size, addr, wdata, F3_SH, 8, x"00007FFF");
         read_mem (clk, re, size, addr, F3_LH, 8);
-        assert rdata = x"00007FFF" report "FAIL LH positive" severity error;
-        report "PASS LH positive halfword" severity note;
+        check_cond(rdata = x"00007FFF", "LH positive", errors);
 
         -- ---- Byte write, signed read ----
         write_mem(clk, we, size, addr, wdata, F3_SB, 12, x"000000FF");
         read_mem (clk, re, size, addr, F3_LB, 12);
-        assert rdata = x"FFFFFFFF" report "FAIL LB sign ext 0xFF" severity error;
-        report "PASS LB signed extend 0xFF->-1" severity note;
+        check_cond(rdata = x"FFFFFFFF", "LB sign ext 0xFF", errors);
 
         -- ---- Byte write, unsigned read ----
         read_mem (clk, re, size, addr, F3_LBU, 12);
-        assert rdata = x"000000FF" report "FAIL LBU zero ext" severity error;
-        report "PASS LBU zero extend 0xFF->255" severity note;
+        check_cond(rdata = x"000000FF", "LBU zero ext", errors);
 
         -- ---- Positive byte ----
         write_mem(clk, we, size, addr, wdata, F3_SB, 16, x"0000007F");
         read_mem (clk, re, size, addr, F3_LB, 16);
-        assert rdata = x"0000007F" report "FAIL LB positive 0x7F" severity error;
-        report "PASS LB positive byte" severity note;
+        check_cond(rdata = x"0000007F", "LB positive 0x7F", errors);
 
         -- ---- Write to different byte offsets in same word ----
         write_mem(clk, we, size, addr, wdata, F3_SB, 20, x"000000AA");
@@ -113,10 +109,9 @@ begin
         write_mem(clk, we, size, addr, wdata, F3_SB, 22, x"000000CC");
         write_mem(clk, we, size, addr, wdata, F3_SB, 23, x"000000DD");
         read_mem (clk, re, size, addr, F3_LW, 20);
-        assert rdata = x"DDCCBBAA" report "FAIL byte-addressed LW" severity error;
-        report "PASS byte-addressed word assembly" severity note;
+        check_cond(rdata = x"DDCCBBAA", "byte-addressed LW", errors);
 
-        report "=== tb_dmem PASS ===" severity note;
+        finish_test("tb_dmem", errors);
         wait;
     end process;
 end architecture sim;

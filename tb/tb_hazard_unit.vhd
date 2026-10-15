@@ -8,6 +8,7 @@ use ieee.numeric_std.all;
 
 library work;
 use work.pkg_riscv.all;
+use work.tb_pkg.all;
 
 entity tb_hazard_unit is
 end entity tb_hazard_unit;
@@ -43,6 +44,7 @@ begin
             branch_mispredict => branch_mispredict);
 
     process
+        variable errors : natural := 0;
     begin
         -- =====================================================================
         -- No hazard: stall=0, fwd=REG
@@ -58,10 +60,9 @@ begin
         idex_rs1        <= "00011";
         idex_rs2        <= "00100";
         wait for 5 ns;
-        assert stall  = '0' report "FAIL: no-hazard stall" severity error;
-        assert fwd_a  = FWD_REG report "FAIL: no-fwd fwd_a" severity error;
-        assert fwd_b  = FWD_REG report "FAIL: no-fwd fwd_b" severity error;
-        report "PASS: no hazard" severity note;
+        check_cond(stall  = '0', "no-hazard stall", errors);
+        check_cond(fwd_a  = FWD_REG, "no-fwd fwd_a", errors);
+        check_cond(fwd_b  = FWD_REG, "no-fwd fwd_b", errors);
 
         -- =====================================================================
         -- Load-use hazard: ID/EX is a load, rd matches IF/ID rs1
@@ -71,24 +72,21 @@ begin
         ifid_rs1      <= "00001";  -- matches!
         ifid_rs2      <= "00010";
         wait for 5 ns;
-        assert stall    = '1' report "FAIL: load-use stall on rs1" severity error;
-        assert flush_idex = '1' report "FAIL: flush_idex on stall" severity error;
-        report "PASS: load-use stall (rs1)" severity note;
+        check_cond(stall    = '1', "load-use stall on rs1", errors);
+        check_cond(flush_idex = '1', "flush_idex on stall", errors);
 
         -- Load-use on rs2
         ifid_rs1 <= "00000";
         ifid_rs2 <= "00001";
         wait for 5 ns;
-        assert stall = '1' report "FAIL: load-use stall on rs2" severity error;
-        report "PASS: load-use stall (rs2)" severity note;
+        check_cond(stall = '1', "load-use stall on rs2", errors);
 
         -- Load-use with rd=x0: no stall (x0 never causes dependency)
         idex_rd  <= "00000";
         ifid_rs1 <= "00000";
         ifid_rs2 <= "00000";
         wait for 5 ns;
-        assert stall = '0' report "FAIL: x0 should not cause load-use stall" severity error;
-        report "PASS: x0 no load-use stall" severity note;
+        check_cond(stall = '0', "x0 should not cause load-use stall", errors);
 
         -- Reset
         idex_mem_read <= '0';
@@ -101,18 +99,16 @@ begin
         idex_rs1        <= "00001";   -- match
         idex_rs2        <= "00010";
         wait for 5 ns;
-        assert fwd_a = FWD_MEM report "FAIL: EX/MEM fwd_a" severity error;
-        assert fwd_b = FWD_REG report "FAIL: no fwd_b"    severity error;
-        report "PASS: EX/MEM fwd_a" severity note;
+        check_cond(fwd_a = FWD_MEM, "EX/MEM fwd_a", errors);
+        check_cond(fwd_b = FWD_REG, "no fwd_b", errors);
 
         -- EX/MEM → RS2 forwarding
         exmem_rd  <= "00010";
         idex_rs1  <= "00001";   -- no match
         idex_rs2  <= "00010";   -- match
         wait for 5 ns;
-        assert fwd_a = FWD_REG report "FAIL: no fwd_a"    severity error;
-        assert fwd_b = FWD_MEM report "FAIL: EX/MEM fwd_b" severity error;
-        report "PASS: EX/MEM fwd_b" severity note;
+        check_cond(fwd_a = FWD_REG, "no fwd_a", errors);
+        check_cond(fwd_b = FWD_MEM, "EX/MEM fwd_b", errors);
 
         -- =====================================================================
         -- MEM/WB → forwarding (lower priority than EX/MEM)
@@ -124,17 +120,15 @@ begin
         idex_rs1        <= "00001";
         idex_rs2        <= "00001";
         wait for 5 ns;
-        assert fwd_a = FWD_WB report "FAIL: MEM/WB fwd_a" severity error;
-        assert fwd_b = FWD_WB report "FAIL: MEM/WB fwd_b" severity error;
-        report "PASS: MEM/WB forwarding" severity note;
+        check_cond(fwd_a = FWD_WB, "MEM/WB fwd_a", errors);
+        check_cond(fwd_b = FWD_WB, "MEM/WB fwd_b", errors);
 
         -- EX/MEM takes priority over MEM/WB when both match
         exmem_reg_write <= '1';
         exmem_rd        <= "00001";
         idex_rs1        <= "00001";
         wait for 5 ns;
-        assert fwd_a = FWD_MEM report "FAIL: priority EX/MEM over MEM/WB" severity error;
-        report "PASS: EX/MEM priority over MEM/WB" severity note;
+        check_cond(fwd_a = FWD_MEM, "priority EX/MEM over MEM/WB", errors);
 
         -- =====================================================================
         -- Branch misprediction: flush_ifid and flush_idex
@@ -144,16 +138,14 @@ begin
         idex_mem_read   <= '0';
         branch_mispredict <= '1';
         wait for 5 ns;
-        assert flush_ifid = '1' report "FAIL: mispredict flush_ifid" severity error;
-        assert flush_idex = '1' report "FAIL: mispredict flush_idex" severity error;
-        report "PASS: branch misprediction flush" severity note;
+        check_cond(flush_ifid = '1', "mispredict flush_ifid", errors);
+        check_cond(flush_idex = '1', "mispredict flush_idex", errors);
 
         branch_mispredict <= '0';
         wait for 5 ns;
-        assert flush_ifid = '0' report "FAIL: no flush when no mispredict" severity error;
-        report "PASS: no flush when normal" severity note;
+        check_cond(flush_ifid = '0', "no flush when no mispredict", errors);
 
-        report "=== tb_hazard_unit PASS ===" severity note;
+        finish_test("tb_hazard_unit", errors);
         wait;
     end process;
 end architecture sim;

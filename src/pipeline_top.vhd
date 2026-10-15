@@ -6,7 +6,7 @@
 --   • All 40 RV32I base instructions
 --   • Hazard detection unit (load-use stall)
 --   • 2-stage data forwarding (EX/MEM → EX, MEM/WB → EX)
---   • 1-bit branch predictor with misprediction flush
+--   • 1-bit branch predictor (lookup in ID, resolve in EX, flush on mispredict)
 --   • Separate instruction and data memories (Harvard, on-chip BRAM)
 -- =============================================================================
 library ieee;
@@ -124,38 +124,36 @@ architecture rtl of pipeline_top is
 
     -- ID/EX register
     type idex_reg_t is record
-        pc       : std_logic_vector(31 downto 0);
-        rs1_data : std_logic_vector(31 downto 0);
-        rs2_data : std_logic_vector(31 downto 0);
-        imm      : std_logic_vector(31 downto 0);
-        rs1_addr : std_logic_vector(4 downto 0);
-        rs2_addr : std_logic_vector(4 downto 0);
-        rd_addr  : std_logic_vector(4 downto 0);
-        ctrl_ex  : ctrl_ex_t;
-        ctrl_mem : ctrl_mem_t;
-        ctrl_wb  : ctrl_wb_t;
-        is_auipc : std_logic;
+        pc         : std_logic_vector(31 downto 0);
+        rs1_data   : std_logic_vector(31 downto 0);
+        rs2_data   : std_logic_vector(31 downto 0);
+        imm        : std_logic_vector(31 downto 0);
+        rs1_addr   : std_logic_vector(4 downto 0);
+        rs2_addr   : std_logic_vector(4 downto 0);
+        rd_addr    : std_logic_vector(4 downto 0);
+        ctrl_ex    : ctrl_ex_t;
+        ctrl_mem   : ctrl_mem_t;
+        ctrl_wb    : ctrl_wb_t;
+        is_auipc   : std_logic;
+        pred_taken : std_logic;  -- prediction made for this branch in ID
     end record;
 
     -- EX/MEM register
     type exmem_reg_t is record
-        pc          : std_logic_vector(31 downto 0);
-        alu_result  : std_logic_vector(31 downto 0);
-        rs2_data    : std_logic_vector(31 downto 0);  -- for store
-        rd_addr     : std_logic_vector(4 downto 0);
-        branch_target : std_logic_vector(31 downto 0);
-        branch_taken  : std_logic;
-        ctrl_mem    : ctrl_mem_t;
-        ctrl_wb     : ctrl_wb_t;
+        pc         : std_logic_vector(31 downto 0);
+        alu_result : std_logic_vector(31 downto 0);  -- PC+4 for JAL/JALR
+        rs2_data   : std_logic_vector(31 downto 0);  -- for store
+        rd_addr    : std_logic_vector(4 downto 0);
+        ctrl_mem   : ctrl_mem_t;
+        ctrl_wb    : ctrl_wb_t;
     end record;
 
     -- MEM/WB register
+    -- Load data is not stored here: DMEM has a registered read port, so its
+    -- output is already aligned with the WB stage.
     type memwb_reg_t is record
         alu_result : std_logic_vector(31 downto 0);
-        mem_rdata  : std_logic_vector(31 downto 0);
         rd_addr    : std_logic_vector(4 downto 0);
-        pc_plus4   : std_logic_vector(31 downto 0);  -- for JAL/JALR link
-        is_jump    : std_logic;
         ctrl_wb    : ctrl_wb_t;
     end record;
 
@@ -168,14 +166,13 @@ architecture rtl of pipeline_top is
                                     rs1_addr => (others=>'0'), rs2_addr => (others=>'0'),
                                     rd_addr => (others=>'0'),
                                     ctrl_ex => CTRL_EX_NOP, ctrl_mem => CTRL_MEM_NOP,
-                                    ctrl_wb => CTRL_WB_NOP, is_auipc => '0');
+                                    ctrl_wb => CTRL_WB_NOP, is_auipc => '0',
+                                    pred_taken => '0');
     signal exmem : exmem_reg_t := (pc => (others=>'0'), alu_result => (others=>'0'),
                                     rs2_data => (others=>'0'), rd_addr => (others=>'0'),
-                                    branch_target => (others=>'0'), branch_taken => '0',
                                     ctrl_mem => CTRL_MEM_NOP, ctrl_wb => CTRL_WB_NOP);
-    signal memwb : memwb_reg_t := (alu_result => (others=>'0'), mem_rdata => (others=>'0'),
-                                    rd_addr => (others=>'0'), pc_plus4 => (others=>'0'),
-                                    is_jump => '0', ctrl_wb => CTRL_WB_NOP);
+    signal memwb : memwb_reg_t := (alu_result => (others=>'0'), rd_addr => (others=>'0'),
+                                    ctrl_wb => CTRL_WB_NOP);
 
     -- =========================================================================
     -- IF stage signals
@@ -183,8 +180,8 @@ architecture rtl of pipeline_top is
     signal pc         : std_logic_vector(31 downto 0) := (others => '0');
     signal pc_plus4   : std_logic_vector(31 downto 0);
     signal next_pc    : std_logic_vector(31 downto 0);
+    signal imem_addr  : std_logic_vector(31 downto 0);
     signal if_instr   : std_logic_vector(31 downto 0);
-    signal predict_taken : std_logic;
 
     -- =========================================================================
     -- ID stage signals
@@ -199,26 +196,31 @@ architecture rtl of pipeline_top is
     signal id_is_auipc : std_logic;
     signal id_rs1_data : std_logic_vector(31 downto 0);
     signal id_rs2_data : std_logic_vector(31 downto 0);
+    signal id_bp_taken : std_logic;  -- BHT lookup for the PC in ID
+    signal id_predict  : std_logic;  -- ID holds a branch predicted taken
+    signal id_redirect : std_logic;  -- redirect fetch to the predicted target
+    signal id_branch_target : std_logic_vector(31 downto 0);
 
     -- =========================================================================
     -- EX stage signals
     -- =========================================================================
     signal ex_alu_a     : std_logic_vector(31 downto 0);
-    signal ex_alu_b_pre : std_logic_vector(31 downto 0);  -- before imm mux
     signal ex_alu_b     : std_logic_vector(31 downto 0);
     signal ex_alu_op    : std_logic_vector(3 downto 0);
     signal ex_alu_result: std_logic_vector(31 downto 0);
     signal ex_alu_zero  : std_logic;
+    signal ex_result    : std_logic_vector(31 downto 0);  -- ALU result or link
+    signal ex_pc_plus4  : std_logic_vector(31 downto 0);
     signal ex_branch_target : std_logic_vector(31 downto 0);
+    signal ex_jump_target   : std_logic_vector(31 downto 0);
     signal ex_branch_taken  : std_logic;
+    signal ex_redirect_pc   : std_logic_vector(31 downto 0);
     signal ex_fwd_rs1   : std_logic_vector(31 downto 0);
     signal ex_fwd_rs2   : std_logic_vector(31 downto 0);
-    signal ex_pc_or_rs1 : std_logic_vector(31 downto 0);  -- AUIPC / JALR mux
 
     -- =========================================================================
     -- WB stage signals
     -- =========================================================================
-    signal wb_result    : std_logic_vector(31 downto 0);
     signal wb_we        : std_logic;
     signal wb_wa        : std_logic_vector(4 downto 0);
     signal wb_wd        : std_logic_vector(31 downto 0);
@@ -231,9 +233,9 @@ architecture rtl of pipeline_top is
     signal flush_idex   : std_logic;
     signal fwd_a        : std_logic_vector(1 downto 0);
     signal fwd_b        : std_logic_vector(1 downto 0);
-    signal branch_mispredict : std_logic;
+    signal ex_redirect  : std_logic;  -- mispredicted branch or jump in EX
 
-    -- MEM data output
+    -- MEM data output (valid during WB, one cycle after the load is in MEM)
     signal dmem_rdata   : std_logic_vector(31 downto 0);
 
 begin
@@ -242,9 +244,11 @@ begin
     -- Submodule instantiations
     -- =========================================================================
 
+    -- IMEM has a registered read port, so it is addressed with the PC that
+    -- will be in the PC register next cycle. Its output then lines up with pc.
     u_imem : imem
         generic map (MEM_DEPTH => MEM_DEPTH, INIT_FILE => IMEM_INIT)
-        port map (clk => clk, addr => pc, instr => if_instr);
+        port map (clk => clk, addr => imem_addr, instr => if_instr);
 
     u_dmem : dmem
         generic map (MEM_DEPTH => MEM_DEPTH)
@@ -295,35 +299,37 @@ begin
             stall            => stall,
             flush_ifid       => flush_ifid,
             flush_idex       => flush_idex,
-            branch_mispredict => branch_mispredict);
+            branch_mispredict => ex_redirect);
 
+    -- Lookup uses the PC in ID (where we first know it is a branch and know
+    -- its target); update uses the branch resolving in EX.
     u_bpred : branch_predictor
         port map (
             clk           => clk,
             rst           => rst,
-            pc_fetch      => pc,
-            predict_taken => predict_taken,
-            update_en     => exmem.ctrl_mem.branch,
-            update_pc     => exmem.pc,
-            actual_taken  => exmem.branch_taken);
+            pc_fetch      => ifid.pc,
+            predict_taken => id_bp_taken,
+            update_en     => idex.ctrl_mem.branch,
+            update_pc     => idex.pc,
+            actual_taken  => ex_branch_taken);
 
     -- =========================================================================
     -- IF STAGE  —  Program counter and instruction fetch
     -- =========================================================================
     pc_plus4 <= std_logic_vector(unsigned(pc) + 4);
 
-    -- PC mux: misprediction correction takes priority, then predictor
-    next_pc <=
-        exmem.branch_target when branch_mispredict = '1' and exmem.branch_taken = '1' else
-        -- if mispredict + not-taken: fall-through (exmem.pc + 4)
-        std_logic_vector(unsigned(exmem.pc) + 4)
-                            when branch_mispredict = '1' and exmem.branch_taken = '0' else
-        -- JALR/JAL target
-        exmem.alu_result    when exmem.ctrl_mem.jump = '1' and memwb.is_jump = '0' else
-        -- predicted-taken branch: jump to target
-        std_logic_vector(unsigned(ifid.pc) + unsigned(id_imm))
-                            when predict_taken = '1' and id_ctrl_mem.branch = '1' else
-        pc_plus4;
+    -- PC mux, highest priority first:
+    --   1. EX redirect: jump, or branch whose prediction was wrong (flush 2)
+    --   2. ID redirect: branch predicted taken (flush 1)
+    --   3. sequential
+    next_pc <= ex_redirect_pc   when ex_redirect = '1' else
+               id_branch_target when id_redirect = '1' else
+               pc_plus4;
+
+    -- On a stall the PC holds, so IMEM re-reads the same address.
+    imem_addr <= (others => '0') when rst = '1' else
+                 pc              when stall = '1' else
+                 next_pc;
 
     process(clk)
     begin
@@ -340,7 +346,7 @@ begin
     process(clk)
     begin
         if rising_edge(clk) then
-            if rst = '1' or flush_ifid = '1' then
+            if rst = '1' or flush_ifid = '1' or id_redirect = '1' then
                 ifid.pc    <= (others => '0');
                 ifid.instr <= NOP_INSTR;
                 ifid.valid <= '0';
@@ -353,44 +359,50 @@ begin
     end process;
 
     -- =========================================================================
-    -- ID STAGE  —  Decode, immediate generation, register read
+    -- ID STAGE  —  Decode, immediate generation, register read, prediction
     -- (control_unit and regfile are instantiated above)
     -- =========================================================================
+    id_branch_target <= std_logic_vector(unsigned(ifid.pc) + unsigned(id_imm));
+    id_predict       <= id_ctrl_mem.branch and id_bp_taken;
+    -- While stalled the branch stays in ID and redirects once the stall clears.
+    id_redirect      <= id_predict and not stall;
 
     -- ID/EX register
     process(clk)
     begin
         if rising_edge(clk) then
             if rst = '1' or flush_idex = '1' then
-                idex.pc       <= (others => '0');
-                idex.rs1_data <= (others => '0');
-                idex.rs2_data <= (others => '0');
-                idex.imm      <= (others => '0');
-                idex.rs1_addr <= (others => '0');
-                idex.rs2_addr <= (others => '0');
-                idex.rd_addr  <= (others => '0');
-                idex.ctrl_ex  <= CTRL_EX_NOP;
-                idex.ctrl_mem <= CTRL_MEM_NOP;
-                idex.ctrl_wb  <= CTRL_WB_NOP;
-                idex.is_auipc <= '0';
+                idex.pc         <= (others => '0');
+                idex.rs1_data   <= (others => '0');
+                idex.rs2_data   <= (others => '0');
+                idex.imm        <= (others => '0');
+                idex.rs1_addr   <= (others => '0');
+                idex.rs2_addr   <= (others => '0');
+                idex.rd_addr    <= (others => '0');
+                idex.ctrl_ex    <= CTRL_EX_NOP;
+                idex.ctrl_mem   <= CTRL_MEM_NOP;
+                idex.ctrl_wb    <= CTRL_WB_NOP;
+                idex.is_auipc   <= '0';
+                idex.pred_taken <= '0';
             else
-                idex.pc       <= ifid.pc;
-                idex.rs1_data <= id_rs1_data;
-                idex.rs2_data <= id_rs2_data;
-                idex.imm      <= id_imm;
-                idex.rs1_addr <= id_rs1;
-                idex.rs2_addr <= id_rs2;
-                idex.rd_addr  <= id_rd;
-                idex.ctrl_ex  <= id_ctrl_ex;
-                idex.ctrl_mem <= id_ctrl_mem;
-                idex.ctrl_wb  <= id_ctrl_wb;
-                idex.is_auipc <= id_is_auipc;
+                idex.pc         <= ifid.pc;
+                idex.rs1_data   <= id_rs1_data;
+                idex.rs2_data   <= id_rs2_data;
+                idex.imm        <= id_imm;
+                idex.rs1_addr   <= id_rs1;
+                idex.rs2_addr   <= id_rs2;
+                idex.rd_addr    <= id_rd;
+                idex.ctrl_ex    <= id_ctrl_ex;
+                idex.ctrl_mem   <= id_ctrl_mem;
+                idex.ctrl_wb    <= id_ctrl_wb;
+                idex.is_auipc   <= id_is_auipc;
+                idex.pred_taken <= id_predict;
             end if;
         end if;
     end process;
 
     -- =========================================================================
-    -- EX STAGE  —  ALU, forwarding muxes, branch condition
+    -- EX STAGE  —  ALU, forwarding muxes, branch/jump resolution
     -- =========================================================================
 
     -- Forwarding mux for RS1
@@ -405,23 +417,24 @@ begin
         wb_wd            when fwd_b = FWD_WB  else
         idex.rs2_data;
 
-    -- For AUIPC: ALU input A = PC; for JALR: ALU input A = RS1 (normal)
-    -- For JAL: ALU computes PC + imm for branch target (A = PC)
-    ex_pc_or_rs1 <=
-        idex.pc when (idex.is_auipc = '1' or
-                      (idex.ctrl_mem.jump = '1' and idex.ctrl_ex.is_jalr = '0'))
+    -- ALU A: PC for AUIPC and JAL (PC + imm), otherwise RS1 (incl. JALR)
+    ex_alu_a <= idex.pc when (idex.is_auipc = '1' or
+                              (idex.ctrl_mem.jump = '1' and idex.ctrl_ex.is_jalr = '0'))
                 else ex_fwd_rs1;
 
-    ex_alu_a <= ex_pc_or_rs1;
-
-    -- ALU B mux: immediate or RS2
-    ex_alu_b_pre <= ex_fwd_rs2;
-    ex_alu_b <= idex.imm when idex.ctrl_ex.alu_src = '1' else ex_alu_b_pre;
+    -- ALU B: immediate or RS2
+    ex_alu_b <= idex.imm when idex.ctrl_ex.alu_src = '1' else ex_fwd_rs2;
 
     ex_alu_op <= idex.ctrl_ex.alu_op;
 
-    -- Branch target = ID/EX PC + imm  (same logic for JAL; JALR uses ALU result directly)
+    ex_pc_plus4      <= std_logic_vector(unsigned(idex.pc) + 4);
     ex_branch_target <= std_logic_vector(unsigned(idex.pc) + unsigned(idex.imm));
+    -- JAL: PC + imm, JALR: (RS1 + imm) with bit 0 cleared (RISC-V spec)
+    ex_jump_target   <= ex_alu_result(31 downto 1) & '0';
+
+    -- JAL/JALR write PC+4 to rd. Putting it in the result here means the
+    -- forwarding paths carry the link value too.
+    ex_result <= ex_pc_plus4 when idex.ctrl_mem.jump = '1' else ex_alu_result;
 
     -- Branch condition evaluation
     process(idex.ctrl_mem.branch, idex.ctrl_mem.mem_size, ex_fwd_rs1, ex_fwd_rs2)
@@ -442,39 +455,36 @@ begin
         ex_branch_taken <= taken;
     end process;
 
-    -- Misprediction: predicted_taken != actual_taken
-    -- predict_taken was sampled when the branch was in IF; it's in EX now.
-    -- We stored the prediction in the pipeline... but for simplicity we use
-    -- a conservative approach: always re-evaluate and flush on any taken branch.
-    -- True misprediction = (predict ≠ actual) for the branch in EX/MEM stage.
-    -- Here branch_mispredict fires from EX/MEM (one cycle after EX).
-    branch_mispredict <= '1' when (exmem.ctrl_mem.branch = '1' and
-                                   exmem.branch_taken /= predict_taken)
-                              or  (exmem.ctrl_mem.jump = '1')
-                         else '0';
+    -- Redirect when a jump reaches EX, or when a branch's actual outcome
+    -- differs from the prediction it carried down from ID. The two younger
+    -- instructions (in IF and ID) are on the wrong path and get flushed.
+    ex_redirect <= '1' when idex.ctrl_mem.jump = '1' or
+                            (idex.ctrl_mem.branch = '1' and
+                             ex_branch_taken /= idex.pred_taken)
+                   else '0';
+
+    ex_redirect_pc <= ex_jump_target   when idex.ctrl_mem.jump = '1' else
+                      ex_branch_target when ex_branch_taken = '1' else
+                      ex_pc_plus4;
 
     -- EX/MEM register
     process(clk)
     begin
         if rising_edge(clk) then
             if rst = '1' then
-                exmem.pc            <= (others => '0');
-                exmem.alu_result    <= (others => '0');
-                exmem.rs2_data      <= (others => '0');
-                exmem.rd_addr       <= (others => '0');
-                exmem.branch_target <= (others => '0');
-                exmem.branch_taken  <= '0';
-                exmem.ctrl_mem      <= CTRL_MEM_NOP;
-                exmem.ctrl_wb       <= CTRL_WB_NOP;
+                exmem.pc         <= (others => '0');
+                exmem.alu_result <= (others => '0');
+                exmem.rs2_data   <= (others => '0');
+                exmem.rd_addr    <= (others => '0');
+                exmem.ctrl_mem   <= CTRL_MEM_NOP;
+                exmem.ctrl_wb    <= CTRL_WB_NOP;
             else
-                exmem.pc            <= idex.pc;
-                exmem.alu_result    <= ex_alu_result;
-                exmem.rs2_data      <= ex_fwd_rs2;
-                exmem.rd_addr       <= idex.rd_addr;
-                exmem.branch_target <= ex_branch_target;
-                exmem.branch_taken  <= ex_branch_taken;
-                exmem.ctrl_mem      <= idex.ctrl_mem;
-                exmem.ctrl_wb       <= idex.ctrl_wb;
+                exmem.pc         <= idex.pc;
+                exmem.alu_result <= ex_result;
+                exmem.rs2_data   <= ex_fwd_rs2;
+                exmem.rd_addr    <= idex.rd_addr;
+                exmem.ctrl_mem   <= idex.ctrl_mem;
+                exmem.ctrl_wb    <= idex.ctrl_wb;
             end if;
         end if;
     end process;
@@ -489,18 +499,12 @@ begin
         if rising_edge(clk) then
             if rst = '1' then
                 memwb.alu_result <= (others => '0');
-                memwb.mem_rdata  <= (others => '0');
                 memwb.rd_addr    <= (others => '0');
-                memwb.pc_plus4   <= (others => '0');
-                memwb.is_jump    <= '0';
-                memwb.ctrl_wb   <= CTRL_WB_NOP;
+                memwb.ctrl_wb    <= CTRL_WB_NOP;
             else
                 memwb.alu_result <= exmem.alu_result;
-                memwb.mem_rdata  <= dmem_rdata;
                 memwb.rd_addr    <= exmem.rd_addr;
-                memwb.pc_plus4   <= std_logic_vector(unsigned(exmem.pc) + 4);
-                memwb.is_jump    <= exmem.ctrl_mem.jump;
-                memwb.ctrl_wb   <= exmem.ctrl_wb;
+                memwb.ctrl_wb    <= exmem.ctrl_wb;
             end if;
         end if;
     end process;
@@ -508,13 +512,9 @@ begin
     -- =========================================================================
     -- WB STAGE  —  Write-back mux
     -- =========================================================================
-    wb_result <= memwb.pc_plus4   when memwb.is_jump = '1'         else
-                 memwb.mem_rdata  when memwb.ctrl_wb.mem_to_reg='1' else
-                 memwb.alu_result;
-
     wb_we <= memwb.ctrl_wb.reg_write;
     wb_wa <= memwb.rd_addr;
-    wb_wd <= wb_result;
+    wb_wd <= dmem_rdata when memwb.ctrl_wb.mem_to_reg = '1' else memwb.alu_result;
 
     -- =========================================================================
     -- Debug outputs

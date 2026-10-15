@@ -37,6 +37,7 @@ vcom -2008 -work work $TBDIR/tb_lui_auipc.vhd
 vcom -2008 -work work $TBDIR/tb_jal_jalr.vhd
 vcom -2008 -work work $TBDIR/tb_branch.vhd
 vcom -2008 -work work $TBDIR/tb_branch_not_taken.vhd
+vcom -2008 -work work $TBDIR/tb_branch_loop.vhd
 vcom -2008 -work work $TBDIR/tb_load_store.vhd
 vcom -2008 -work work $TBDIR/tb_all_loads.vhd
 vcom -2008 -work work $TBDIR/tb_all_stores.vhd
@@ -76,6 +77,7 @@ run_tb tb_lui_auipc
 run_tb tb_jal_jalr
 run_tb tb_branch
 run_tb tb_branch_not_taken
+run_tb tb_branch_loop
 run_tb tb_load_store
 run_tb tb_all_loads
 run_tb tb_all_stores

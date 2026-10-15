@@ -7,6 +7,7 @@ use ieee.numeric_std.all;
 
 library work;
 use work.pkg_riscv.all;
+use work.tb_pkg.all;
 
 entity tb_alu is
 end entity tb_alu;
@@ -17,31 +18,30 @@ architecture sim of tb_alu is
     signal result : std_logic_vector(31 downto 0);
     signal zero   : std_logic;
 
-    procedure chk(op_i : std_logic_vector(3 downto 0);
-                  a_i  : integer;
-                  b_i  : integer;
-                  exp  : integer;
-                  msg  : string) is
-        variable exp_v : std_logic_vector(31 downto 0);
-    begin
-        op <= op_i;
-        a  <= std_logic_vector(to_signed(a_i, 32));
-        b  <= std_logic_vector(to_signed(b_i, 32));
-        wait for 5 ns;
-        exp_v := std_logic_vector(to_signed(exp, 32));
-        assert result = exp_v
-            report "FAIL " & msg &
-                   " got=" & integer'image(to_integer(signed(result))) &
-                   " exp=" & integer'image(exp)
-            severity error;
-        report "PASS " & msg severity note;
-    end procedure;
 
 begin
     dut: entity work.alu
         port map (op => op, a => a, b => b, result => result, zero => zero);
 
     process
+        variable errors : natural := 0;
+
+        procedure chk(op_i : std_logic_vector(3 downto 0);
+                      a_i  : integer;
+                      b_i  : integer;
+                      exp  : integer;
+                      msg  : string) is
+            variable exp_v : std_logic_vector(31 downto 0);
+        begin
+            op <= op_i;
+            a  <= std_logic_vector(to_signed(a_i, 32));
+            b  <= std_logic_vector(to_signed(b_i, 32));
+            wait for 5 ns;
+            exp_v := std_logic_vector(to_signed(exp, 32));
+            check_cond(result = exp_v, "" & msg &
+                       " got=" & integer'image(to_integer(signed(result))) &
+                       " exp=" & integer'image(exp), errors);
+        end procedure;
     begin
         -- ADD
         chk(ALU_ADD, 10,  20,  30,  "ADD 10+20");
@@ -81,35 +81,31 @@ begin
         a  <= x"FFFFFFFF";  -- 4294967295 unsigned
         b  <= x"00000001";  -- 1
         wait for 5 ns;
-        assert result = x"00000000" report "FAIL SLTU large < 1" severity error;
-        report "PASS SLTU large < 1" severity note;
+        check_cond(result = x"00000000", "SLTU large < 1", errors);
 
         op <= ALU_SLTU;
         a  <= x"00000001";
         b  <= x"FFFFFFFF";
         wait for 5 ns;
-        assert result = x"00000001" report "FAIL SLTU 1 < large" severity error;
-        report "PASS SLTU 1 < large" severity note;
+        check_cond(result = x"00000001", "SLTU 1 < large", errors);
 
         -- PASSB (LUI)
-        chk(ALU_PASSB, 0, 16#DEAD0000#, 16#DEAD0000#, "PASSB LUI");
+        chk(ALU_PASSB, 0, 16#5EAD0000#, 16#5EAD0000#, "PASSB LUI");  -- must fit a VHDL integer
 
         -- ZERO flag
         op <= ALU_SUB;
         a  <= x"00000005";
         b  <= x"00000005";
         wait for 5 ns;
-        assert zero = '1' report "FAIL zero flag" severity error;
-        report "PASS zero flag" severity note;
+        check_cond(zero = '1', "zero flag", errors);
 
         op <= ALU_ADD;
         a  <= x"00000001";
         b  <= x"00000000";
         wait for 5 ns;
-        assert zero = '0' report "FAIL non-zero flag" severity error;
-        report "PASS non-zero flag" severity note;
+        check_cond(zero = '0', "non-zero flag", errors);
 
-        report "=== tb_alu COMPLETE ===" severity note;
+        finish_test("tb_alu", errors);
         wait;
     end process;
 end architecture sim;
